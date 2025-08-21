@@ -2,26 +2,25 @@ import mongoose from 'mongoose';
 
 const SizeSchema = new mongoose.Schema(
   {
-    width:  { type: Number, required: true },  // cm (o px si preferís)
-    height: { type: Number, required: true }
+    width:      { type: Number, required: true },
+    height:     { type: Number, required: true },
+    isStandard: { type: Boolean, default: false }, // NUEVO
+    deltaPct:   { type: Number,  default: 0 },     // NUEVO
   },
   { _id: false }
 );
 
 const PricesSchema = new mongoose.Schema(
-  {
-    started: { type: Number, default: null },
-    premium: { type: Number, default: null },
-    deluxe:  { type: Number, default: null }
-  },
+  { started: Number, premium: Number, deluxe: Number },
   { _id: false }
 );
 
 const OverrideSchema = new mongoose.Schema(
   {
     type:    { type: String, required: true, unique: true, index: true },
+    name:    { type: String, default: null },
     visible: { type: Boolean, default: true },
-    sizes:   { type: [SizeSchema], default: [] },
+    sizes:   { type: [SizeSchema], default: [] },      // ahora incluye isStandard + deltaPct
     prices:  { type: PricesSchema, default: () => ({}) }
   },
   { timestamps: true, versionKey: false }
