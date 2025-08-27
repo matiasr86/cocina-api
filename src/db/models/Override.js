@@ -19,6 +19,7 @@ const OverrideSchema = new mongoose.Schema(
   {
     type:    { type: String, required: true, unique: true, index: true },
     name:    { type: String, default: null },
+    subtitle: { type: String, default: null }, 
     visible: { type: Boolean, default: true },
     sizes:   { type: [SizeSchema], default: [] },      // ahora incluye isStandard + deltaPct
     prices:  { type: PricesSchema, default: () => ({}) }

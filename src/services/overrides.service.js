@@ -18,6 +18,7 @@ export async function listOverrides() {
   for (const d of docs) {
     byType[d.type] = {
       name:    d.name ?? null,
+      subtitle: d.subtitle ?? null, 
       visible: d.visible ?? true,
       sizes:   Array.isArray(d.sizes) ? d.sizes : [],
       prices:  d.prices ?? {},
@@ -36,6 +37,7 @@ export async function upsertOverride(type, patch = {}) {
   const update = { type };
 
   if ('name' in patch)    update.name    = patch.name ?? null;
+  if ('subtitle' in patch) update.subtitle = patch.subtitle;  
   if ('visible' in patch) update.visible = !!patch.visible;
 
   if ('prices' in patch) {
