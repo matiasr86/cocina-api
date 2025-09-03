@@ -1,8 +1,13 @@
+// src/routes/index.js
 import { Router } from 'express';
 import overridesRoutes from './overrides.routes.js';
 
 const router = Router();
 
-router.use('/overrides', overridesRoutes);
+router.get('/health', (req, res) =>
+  res.json({ ok: true, ts: Date.now() })
+);
+
+router.use('/', overridesRoutes);
 
 export default router;

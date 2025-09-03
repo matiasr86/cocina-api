@@ -1,14 +1,27 @@
+// src/routes/overrides.routes.js
 import { Router } from 'express';
-import { getOverrides, putOverride, deleteOverrides } from '../controllers/overrides.controller.js';
-import { requireAdmin } from '../middlewares/auth.js';
+import { requireAuth, requireAdmin } from '../middlewares/auth.js';
+import * as ctrl from '../controllers/overrides.controller.js';
+import { asyncHandler } from '../utils/asyncHandler.js';
 
 const router = Router();
 
-// público (lectura)
-router.get('/', getOverrides);
+// Lectura (pública)
+router.get('/overrides', asyncHandler(ctrl.getOverrides));
 
-// admin (escritura)
-router.put('/:type', requireAdmin, putOverride);
-router.delete('/', requireAdmin, deleteOverrides);
+// Escritura: sólo admin autenticado
+router.put(
+  '/overrides/:type',
+  requireAuth,
+  requireAdmin,
+  asyncHandler(ctrl.putOverride)      // <- nombre correcto
+);
+
+router.delete(
+  '/overrides',
+  requireAuth,
+  requireAdmin,
+  asyncHandler(ctrl.deleteOverrides)  // <- nombre correcto
+);
 
 export default router;
