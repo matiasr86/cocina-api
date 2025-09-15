@@ -7,6 +7,9 @@ import { errorHandler } from '../middlewares/errorHandler.js';
 export function createExpressApp() {
   const app = express();
   app.use(cors());
+
+  // ⬇️ NUEVO: más límite solo para /api/render (para el DataURL del canvas)
+  app.use('/api/render', express.json({ limit: '25mb' }));
   app.use(express.json({ limit: '2mb' }));
   app.use(morgan('dev'));
 
