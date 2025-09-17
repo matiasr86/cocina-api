@@ -1,3 +1,4 @@
+// api/src/services/renders.service.js
 import OpenAI from 'openai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
@@ -6,7 +7,7 @@ const genai  = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 const GEMINI_IMAGE_MODEL = 'gemini-2.5-flash-image-preview';
 
-/* ============== util: retry con backoff para 5xx ============== */
+/* ============== retry/backoff para 5xx ============== */
 async function withRetry(fn, times = 3) {
   let lastErr;
   for (let i = 0; i < times; i++) {
@@ -27,7 +28,7 @@ async function withRetry(fn, times = 3) {
   throw lastErr;
 }
 
-/* ============== util: extraer imagen inlineData ============== */
+/* ============== extraer inline PNG ============== */
 function extractInlinePng(resp) {
   const parts =
     resp?.response?.candidates?.[0]?.content?.parts ||
@@ -41,10 +42,8 @@ function extractInlinePng(resp) {
   return Buffer.from(imgPart.inlineData.data, 'base64');
 }
 
-/* ================================================================
-   OPENAI (igual que tenías)
-   ================================================================ */
-export async function generatePhotoRaw({ prompt, size = '512x512' }) {
+/* ===================== OPENAI (texto→img) ===================== */
+export async function generatePhotoRaw({ prompt, size = '1024x1024' }) {
   const out = await openai.images.generate({
     model: 'gpt-image-1',
     prompt,
@@ -56,22 +55,23 @@ export async function generatePhotoRaw({ prompt, size = '512x512' }) {
   return Buffer.from(b64, 'base64');
 }
 
-/* ================================================================
-   GEMINI — Texto + 1 Imagen -> Imagen (single)
-   - sin generationConfig extra (evita 400)
-   - retry ante 5xx del endpoint
-   ================================================================ */
+/* ============ GEMINI (texto + 1 imagen → img) ============ */
 export async function generatePhotoGeminiRaw({
   prompt,
   inputImageBuffer,
   inputImageMime = 'image/png',
-  size = '1024x1024', // sólo hint textual (no se envía como generation_config)
+  size = '1024x1024',
 }) {
   if (!inputImageBuffer) throw new Error('Missing input image buffer');
 
-  const model = genai.getGenerativeModel({ model: GEMINI_IMAGE_MODEL });
+  const model = genai.getGenerativeModel({
+    model: GEMINI_IMAGE_MODEL,
+    generationConfig: {
+      temperature: 0.15,   // ↓ menos invención
+      topP: 0.9,
+    },
+  });
 
-  // hint de tamaño + reglas de fidelidad (texto)
   const sizeHint =
     size === '512x512'  ? 'Imagen cuadrada 512×512.'  :
     size === '768x768'  ? 'Imagen cuadrada 768×768.'  :
@@ -79,16 +79,15 @@ export async function generatePhotoGeminiRaw({
 
   const strictRules = `
 REGLAS ESTRICTAS DE FIDELIDAD:
-• Seguí el wireframe de la imagen de referencia EXACTAMENTE: cantidades, orden izquierda→derecha y proporciones relativas.
-• No agregues ni quites módulos. No cambies puertas por cajones ni hornos por anafes.
-• Alinear alacenas superiores en una línea horizontal limpia.
-• Respetar la ubicación de la heladera según el wireframe.
-• Vista frontal tipo elevación, cámara ~50 mm. Fondo/piso neutros. Sin personas ni textos.
+• Seguí el SPEC textual (módulos, orden y bounding boxes) con tolerancia ≤ 2 cm.
+• No agregues ni quites módulos. No conviertas puertas↔cajones.
+• No dibujes textos o etiquetas en el resultado.
+• Vista frontal tipo elevación, fondo/piso neutros, sin personas.
 `.trim();
 
   const guidedPrompt = [sizeHint, strictRules, (prompt || '')].join('\n\n');
-  const base64 = inputImageBuffer.toString('base64');
 
+  const base64 = inputImageBuffer.toString('base64');
   const resp = await withRetry(() =>
     model.generateContent([
       { text: guidedPrompt },
@@ -99,11 +98,7 @@ REGLAS ESTRICTAS DE FIDELIDAD:
   return extractInlinePng(resp);
 }
 
-/* ================================================================
-   GEMINI — Texto + N Imágenes -> Imagen (multi-pared)
-   - acepta [{ buffer, mime }]
-   - retry ante 5xx
-   ================================================================ */
+/* ============ GEMINI (texto + N imágenes → img) ============ */
 export async function generatePhotoGeminiMultiRaw({
   prompt,
   images = [], // [{ buffer: Buffer, mime: 'image/png' }]
@@ -112,9 +107,15 @@ export async function generatePhotoGeminiMultiRaw({
     throw new Error('Missing images array');
   }
 
-  const model = genai.getGenerativeModel({ model: GEMINI_IMAGE_MODEL });
+  const model = genai.getGenerativeModel({
+    model: GEMINI_IMAGE_MODEL,
+    generationConfig: {
+      temperature: 0.15,
+      topP: 0.9,
+    },
+  });
 
-  const parts = [{ text: prompt }];
+  const parts = [{ text: `${prompt}\n\nNo dibujar textos ni etiquetas en el resultado.` }];
   for (const img of images) {
     if (!img?.buffer) continue;
     const mime = img?.mime || 'image/png';

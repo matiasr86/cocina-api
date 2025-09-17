@@ -1,4 +1,9 @@
-import { generatePhotoRaw, generatePhotoGeminiRaw, generatePhotoGeminiMultiRaw } from '../services/renders.service.js';
+// api/src/controllers/renders.controller.js
+import {
+  generatePhotoRaw,
+  generatePhotoGeminiRaw,
+  generatePhotoGeminiMultiRaw
+} from '../services/renders.service.js';
 import { buildImagePromptFromPayload } from '../utils/buildImagePrompt.js';
 
 function normalizeSize(q) {
@@ -6,18 +11,17 @@ function normalizeSize(q) {
   if (s === '512'  || s === '512x512')   return '512x512';
   if (s === '768'  || s === '768x768')   return '768x768';
   if (s === '1024' || s === '1024x1024') return '1024x1024';
-  return '512x512';
+  return '1024x1024'; // por defecto, más grande
 }
 
-// Devuelve buffer + mime real del DataURL
+// Devuelve { buffer, mimeType } desde un DataURL (PNG/JPEG)
 function dataUrlToBuffer(dataUrl) {
-  // Ej: "data:image/png;base64,AAAA..."
-  const m = /^data:(.+?);base64,(.+)$/.exec(dataUrl || '');
+  const m = /^data:(.+?);base64,([\s\S]+)$/.exec(dataUrl || '');
   if (!m) throw new Error('Bad data URL');
   return { buffer: Buffer.from(m[2], 'base64'), mimeType: m[1] };
 }
 
-// === Render OpenAI (como ya lo tenías) ===
+// ========== OpenAI (texto → imagen) ==========
 export async function postPhotoRaw(req, res) {
   const size = normalizeSize(req.query.size || req.body?.size);
   let prompt = req.body?.prompt;
@@ -40,12 +44,11 @@ export async function postPhotoGuidedRaw(req, res) {
   return postPhotoRaw(req, res);
 }
 
-// === NUEVO: Render Gemini (imagen + texto) ===
-// Body JSON: { payload?: object, prompt?: string, imageDataUrl: string(dataURL), size?: ... }
+// ========== Gemini (imagen + texto → imagen) ==========
+// Body: { payload?:object, prompt?:string, imageDataUrl: string(DataURL), size? }
 export async function postPhotoGeminiRaw(req, res) {
   const size = normalizeSize(req.query.size || req.body?.size);
   const imageDataUrl = req.body?.imageDataUrl;
-
   if (!imageDataUrl) return res.status(400).json({ error: 'Missing imageDataUrl' });
 
   let prompt = req.body?.prompt;
@@ -71,8 +74,7 @@ export async function postPhotoGeminiRaw(req, res) {
   res.send(out);
 }
 
-
-/* Helpers mínimos para resumir por pared */
+/* ===== Helpers mini (para multi-pared) ===== */
 function _rowOf(m) {
   if (m.row) return String(m.row);
   const h = Number(m.height) || 0;
@@ -115,7 +117,7 @@ function _lineByRow(mods = []) {
  *     modulesByWall: { [wallId]: Module[] },
  *     quality: 'started'|'premium'|'deluxe'
  *   },
- *   imageDataUrls: string[]   // data:image/png;base64,...
+ *   imageDataUrls: string[],   // DataURL de cada pared, ordenadas
  *   size?: '512x512'|'768x768'|'1024x1024'
  * }
  */
@@ -129,20 +131,17 @@ export async function postPhotoGeminiMultiRaw(req, res) {
     return res.status(400).json({ error: 'kitchenType must be "L" or "C" for multi-wall' });
   }
 
-  // Construimos prompt multi-pared
+  // Prompt multi-pared textual (resumen por pared)
   const walls = Array.isArray(payload?.walls) ? payload.walls : [];
   const modulesByWall = payload?.modulesByWall || {};
-  // Orden sugerido
-  const order = kt === 'L'
-    ? ['left','right']
-    : ['left','front','right'];
+  const order = kt === 'L' ? ['left','right'] : ['left','front','right'];
 
   const header = [
     `COCINA ${kt === 'L' ? 'EN L' : 'EN C/U'} — Referencias MULTI-PARED.`,
-    `Vas a recibir ${imageDataUrls.length} imagen(es) de referencia: en orden ${order.join(' → ')} cuando existan.`,
-    'Objetivo: generar UNA imagen final de la pared principal (vista frontal tipo elevación), fiel a los módulos y alineaciones.',
+    `Recibirás ${imageDataUrls.length} imagen(es) en orden: ${order.join(' → ')} (cuando existan).`,
+    'Objetivo: generar UNA imagen final de la pared principal (frontal/elevación) fiel a módulos y alineaciones.',
     '',
-    'Esquineros / “parte negra”: cuando un módulo esquinero muestre un lateral oscuro junto a la pared, ESO representa la profundidad del retorno en la pared adyacente. No renderizarlo como hueco; mantener continuidad y proporción respecto del módulo de la otra pared.',
+    'Esquineros / “parte negra”: cuando un esquinero muestre un lateral oscuro junto a la pared, ESO representa la profundidad del retorno de la pared adyacente. No es hueco; mantener continuidad y proporción con el módulo de la otra pared.',
   ].join('\n');
 
   const perWall = [];
@@ -160,17 +159,17 @@ export async function postPhotoGeminiMultiRaw(req, res) {
   const reglas = [
     '',
     'REGLAS ESTRICTAS:',
-    '• Seguir exactamente cantidades y orden de módulos por pared (izq→der).',
-    '• No agregar ni quitar módulos. No convertir puertas↔cajones, ni hornos/anafes.',
-    '• Alinear todas las alacenas superiores en una línea limpia.',
-    '• Vista frontal tipo elevación, cámara ~50 mm; fondo y piso neutros; sin personas ni textos.',
+    '• Seguir cantidades y orden por pared (izq→der) sin inventar.',
+    '• No convertir puertas↔cajones ni mover hornos/anafes.',
+    '• Alinear alacenas superiores en una línea limpia.',
+    '• Vista frontal, fondo/piso neutros, sin personas ni textos.',
   ].join('\n');
 
   const finalPrompt = [header, ...perWall, reglas].join('\n');
 
   // DataURLs -> buffers
   function dataUrlToBuffer(d) {
-    const m = /^data:(.+?);base64,(.+)$/.exec(d || '');
+    const m = /^data:(.+?);base64,([\s\S]+)$/.exec(d || '');
     if (!m) throw new Error('Bad data URL');
     return { buffer: Buffer.from(m[2], 'base64'), mime: m[1] || 'image/png' };
   }

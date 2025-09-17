@@ -1,180 +1,148 @@
-// Versión fiel + acabados por calidad + ANCLAS DE POSICIÓN (x en cm)
-// ❗️Quitada la regla que forzaba la heladera a la derecha.
-
-function num(n, fb = null) {
-  const v = Number(n);
-  return Number.isFinite(v) ? v : fb;
-}
-
-function normalizarFila(m) {
+// src/utils/buildImagePrompt.js
+function n(v, fb = 0) { const x = Number(v); return Number.isFinite(x) ? x : fb; }
+function filaDe(m) {
   if (m.row) return String(m.row);
-  const h = Number(m.height) || 0;
+  const h = n(m.height);
   if (h >= 130) return 'tall';
-  if (h >= 45 && h <= 95) {
-    const t = (m.title || '').toLowerCase();
-    if (t.includes('al ') || t.includes('alacena')) return 'upper';
-    return 'base';
-  }
-  return 'base';
+  if (h >= 45 && h <= 95) return 'base';
+  return 'upper';
 }
-
-function moduloToEtiqueta(m) {
-  const w = m.width != null ? `${Number(m.width)} cm` : '';
-  const extra =
-    m.subtitle ? ` — ${m.subtitle}` :
-    m.sizeLabel ? ` — ${m.sizeLabel}` :
-    '';
-  return `${m.title || m.type}${w ? ` (${w})` : ''}${extra}`;
+function byX(a, b) {
+  const ax = n(a.xCm ?? a.x); const bx = n(b.xCm ?? b.x);
+  if (ax !== bx) return ax - bx;
+  return String(a.aiTag || a.title || a.type).localeCompare(String(b.aiTag || b.title || b.type));
 }
-
-function ordenarIzqDer(arr = []) {
-  return [...arr].sort((a, b) => {
-    const ax = Number(a.xCm ?? a.x ?? NaN);
-    const bx = Number(b.xCm ?? b.x ?? NaN);
-    if (Number.isFinite(ax) && Number.isFinite(bx)) return ax - bx;
-    return String(a.title || a.type).localeCompare(String(b.title || b.type));
-  });
+function shapeLabel(ai = {}, fallback = '') {
+  const s = String(ai?.shape || ''); const doors = n(ai?.doors, 0); const drawers = n(ai?.drawers, 0); const open = !!ai?.open;
+  if (s === 'linear-skirting') return 'BANQUINA/ZÓCALO lineal';
+  if (s === 'base-doors') return `BAJO MESADA de ${doors || 1} puerta(s)`;
+  if (s === 'base-drawers') return `BAJO MESADA CAJONERO de ${drawers || 2} cajón(es)`;
+  if (s === 'base-open' || (s.startsWith('base') && open)) return 'BAJO MESADA ABIERTO (sin puertas)';
+  if (s === 'base-corner') return 'BAJO MESADA ESQUINERO';
+  if (s === 'upper-doors') return `ALACENA de ${doors || 1} puerta(s)`;
+  if (s === 'upper-open'  || (s.startsWith('upper') && open)) return 'ALACENA ABIERTA';
+  if (s === 'upper-horizontal') return 'ALACENA de puerta(s) HORIZONTALES';
+  if (s === 'upper-extractor') return 'ALACENA con extractor integrado';
+  if (s === 'upper-bridge') return 'ALACENA PUENTE';
+  if (s === 'tall-column') return 'COLUMNA/ALTO';
+  if (s === 'appliance-fridge') return 'HELADERA independiente';
+  if (s === 'appliance-range-free-standing') return 'COCINA/HORNO FREE-STANDING';
+  if (s === 'appliance-oven-built-in') return 'HORNO EMPOTRADO';
+  return fallback || 'MÓDULO';
 }
-
-function filaToLinea(mods) {
-  return ordenarIzqDer(mods).map(moduloToEtiqueta).join(' | ');
+function acabadosPorCalidad(q) {
+  if (q === 'started') return ['frentes melamina clara','tiradores de barra visibles','mesada laminada gris claro'];
+  if (q === 'deluxe')  return ['frentes laqueados o chapa natural','sin tiradores visibles','mesada de cuarzo/piedra canto fino'];
+  return ['frentes mate','sin tiradores visibles (gola J en bajo mesada; push-open en alacenas)','herrajes con cierre suave','mesada tipo cuarzo gris claro'];
 }
-
-// Anclas de posición: x inicial (cm) y ancho (cm) por módulo (izq→der)
-function filaToAnchors(mods) {
-  const ordered = ordenarIzqDer(mods);
-  let cursor = 0;
-  const tokens = [];
-
-  for (const m of ordered) {
-    const w = Number(m.width) || null;
-    let x = Number(m.xCm ?? m.x);
-    if (!Number.isFinite(x)) {
-      // si no tenemos x, aproximamos con acumulado
-      if (Number.isFinite(cursor)) x = cursor;
-    }
-    if (Number.isFinite(x) && Number.isFinite(w)) {
-      tokens.push(`${Math.round(x)}cm: ${m.title || m.type} (${w}cm)`);
-      cursor = x + w;
-    } else if (Number.isFinite(w)) {
-      tokens.push(`${m.title || m.type} (${w}cm)`);
-      cursor += w;
-    } else {
-      tokens.push(`${m.title || m.type}`);
-    }
-  }
-  return tokens.length ? `Anclas (cm, izq→der): ${tokens.join(' · ')}.` : null;
-}
-
-function resumenPorFilas(modules = []) {
-  const filas = { base: [], upper: [], tall: [] };
-  for (const m of modules) filas[normalizarFila(m)].push(m);
-
-  const lineas = [];
-  const anchors = [];
-
-  if (filas.base.length)  {
-    lineas.push(`Bajo mesada (izq→der): ${filaToLinea(filas.base)}.`);
-    const a = filaToAnchors(filas.base); if (a) anchors.push(a);
-  }
-  if (filas.upper.length) {
-    lineas.push(`Alacenas superiores (izq→der): ${filaToLinea(filas.upper)}.`);
-    const a = filaToAnchors(filas.upper); if (a) anchors.push(a);
-  }
-  if (filas.tall.length)  {
-    lineas.push(`Columnas/alto (izq→der): ${filaToLinea(filas.tall)}.`);
-    const a = filaToAnchors(filas.tall); if (a) anchors.push(a);
-  }
-
-  return { lineas, anchors };
-}
-
-function pistasPorModulo(modules = [], quality = 'premium') {
-  const out = [];
-  for (const m of modules) {
-    const name = m.title || m.type || 'Módulo';
-    const hints = m.aiHints || {};
-    const pieces = [];
-    if (hints.common) pieces.push(hints.common);
-    if (quality === 'started' && hints.started) pieces.push(hints.started);
-    if (quality === 'premium' && hints.premium) pieces.push(hints.premium);
-    if (quality === 'deluxe' && hints.deluxe) pieces.push(hints.deluxe);
-    if (pieces.length) out.push(`• ${name}: ${pieces.join('; ')}`);
+function resumenInventario(mods) {
+  const out = { total: mods.length, base:0, upper:0, tall:0, abiertos:0, cajoneros:0, puertas:0, lineales:0, electro:0 };
+  for (const m of mods) {
+    const row = m.row || filaDe(m); out[row] = (out[row] || 0) + 1;
+    const ai = m.ai || {}; const s = String(ai.shape || '');
+    if (ai.open) out.abiertos++; if (n(ai.drawers,0) > 0) out.cajoneros++; if (n(ai.doors,0) > 0) out.puertas += n(ai.doors,0);
+    if (s === 'linear-skirting') out.lineales++; if (s.startsWith('appliance-')) out.electro++;
   }
   return out;
 }
 
 export function buildImagePromptFromPayload(payload) {
   const quality = String(payload?.quality || 'premium');
-  const wall = payload?.wall || payload?.activeWall || {};
-  const type = String(payload?.kitchenType || 'Recta');
+  const wall    = payload?.wall || payload?.activeWall || {};
+  const type    = String(payload?.kitchenType || 'Recta');
 
-  const modules =
-    payload?.modules ||
-    payload?.plan?.modules ||
-    payload?.breakdown?.instances ||
-    [];
+  const modules = Array.isArray(payload?.modules) ? payload.modules : [];
+  const widthM  = n(wall.width, 4.0);
+  const heightM = n(wall.height, 2.6);
 
-  const widthM  = num(wall.width, 4.0);
-  const heightM = num(wall.height, 2.6);
+  const ordered = [...modules].sort(byX);
 
-  // Acabados por calidad (perfil J/gola y push-open en premium/deluxe)
-  const acabados = {
-    started: [
-      'frentes melamina lisa tono blanco o arena',
-      'tiradores rectos simples visibles en base y alacena',
-      'mesada laminada color gris claro',
-    ],
-    premium: [
-      'frentes mate lisos (laminado/termolaminado)',
-      'bajo mesada: uñero de aluminio tipo “J” o perfil gola horizontal continuo — sin tiradores aplicados',
-      'alacenas superiores: apertura push-open — sin tiradores visibles',
-      'mesada tipo cuarzo gris claro',
-      'herrajes con cierre suave',
-    ],
-    deluxe: [
-      'frentes laqueados satinados o chapa natural',
-      'bajo mesada: uñero oculto tipo “J” o gola minimal — sin tiradores visibles',
-      'alacenas superiores: push-open — sin tiradores visibles',
-      'mesada de cuarzo/piedra con canto fino y zócalo mínimo',
-      'alineaciones perfectas y tolerancias mínimas',
-    ],
-  }[quality];
+  // === Permisos / prohibiciones dinámicas ===
+  const allowedTags = ordered.map((m,i)=>String(m.aiTag || m.type || m.title || `M${i+1}`).toUpperCase());
+  const usedShapes  = Array.from(new Set(ordered.map(m => String(m.ai?.shape || '').trim()).filter(Boolean)));
+  const hasBase  = ordered.some(m => (m.row || filaDe(m)) === 'base');
+  const hasUpper = ordered.some(m => (m.row || filaDe(m)) === 'upper');
+  const hasTall  = ordered.some(m => (m.row || filaDe(m)) === 'tall');
 
-  const { lineas: plano, anchors } = resumenPorFilas(modules);
-  const pistas = pistasPorModulo(modules, quality);
+  const forbiddenShapes = [
+    !hasUpper && ['upper-doors','upper-open','upper-horizontal','upper-extractor','upper-bridge'],
+    !hasTall  && ['tall-column'],
+    // nada “decorativo”
+    ['shelf','floating-shelf','rail','pegboard','panel','island','peninsula','table','chair']
+  ].flat().filter(Boolean);
+
+  // Bounding boxes declarativas (origen piso-izquierda)
+  const posLines = ordered.map((m, i) => {
+    const tag  = String(m.aiTag || m.type || m.title || `M${i+1}`).toUpperCase();
+    const ai   = m.ai || {};
+    const row  = m.row || filaDe(m);
+    const x    = n(m.xCm ?? m.x);
+    const y    = n(m.yCm ?? m.y);
+    const w    = n(m.width);
+    const h    = n(m.height);
+    const part = {
+      tag, row, shape: ai.shape || 'n/a',
+      doors: n(ai.doors, 0), drawers: n(ai.drawers, 0), open: !!ai.open,
+      orientation: ai.orientation || null, hinge: ai.hinge || null,
+      box: { x, y, w, h, unit: 'cm', origin: 'floor-left' }
+    };
+    const human = shapeLabel(ai, m.title || m.type);
+    return `BOX ${JSON.stringify(part)}  // ${human}`;
+  });
+
+  const inv = resumenInventario(ordered);
+  const acabados = acabadosPorCalidad(quality);
 
   const lineaCocina =
-    type === 'L' ? 'Cocina en L: renderizar la pared principal de frente (no perspectiva de esquina).'
-    : type === 'C' ? 'Cocina en C/U: renderizar la pared frontal centrada.'
-    : 'Cocina lineal en una pared: vista frontal centrada.';
+    type === 'L' ? 'Cocina en L: renderizar SOLO la pared principal (vista frontal).'
+  : type === 'C' ? 'Cocina en C/U: renderizar la pared frontal centrada.'
+  : 'Cocina lineal (una pared): vista frontal.';
 
-  const reglas = [
-    'REGLAS ESTRICTAS:',
-    '• Respetar exactamente el ORDEN y CANTIDADES por fila (izquierda a derecha).',
-    '• No agregar, quitar ni sustituir módulos (no convertir puertas↔cajones, ni mover la heladera).',
-    '• Alinear todas las alacenas superiores a una línea horizontal limpia y continua.',
-    '• El horno queda en el módulo indicado.',
-    '• Sin decoraciones (sin personas, cuadros, plantas ni texto).',
-    '• Fondo y piso neutros, iluminación LED lineal bajo alacenas.',
-  ];
-  if (quality === 'premium' || quality === 'deluxe') {
-    reglas.push('• En BAJO MESADA usar uñero/perfil gola (sin tiradores aplicados).');
-    reglas.push('• En ALACENAS SUPERIORES usar push-open (sin tiradores visibles).');
-  }
+  const reglasDuras = [
+    'REGLAS DE BLOQUEO ABSOLUTO:',
+    '• Renderizar EXCLUSIVAMENTE los módulos listados. Coincidencia 1:1 por cantidad y TAG. PROHIBIDO inventar.',
+    '• Cada área FUERA DE TODA BOX debe quedar como PARED LISA sin muebles ni estantes.',
+    '• Mantener posiciones y tamaños EXACTOS según {box:{x,y,w,h}} (cm, origen floor-left). Tolerancia ±2 cm.',
+    '• Respetar la forma declarada (doors/drawers/open). No convertir puertas↔cajones ni empotrar aparatos free-standing.',
+    '• La mesada sólo sobre los módulos de base. No generar alacenas si no existen BOX de fila upper.',
+    '• Ignorar textos del boceto. No imprimir textos en el resultado.',
+    '• Fondo y piso neutros. Cámara: elevación frontal.',
+  ].join('\n');
+
+  const permisos = [
+    'CONTROL DE CONJUNTO:',
+    `• TAGS PERMITIDOS (únicos válidos): ${allowedTags.join(', ') || '—'}.`,
+    `• SHAPES USADOS (permitidos): ${usedShapes.join(', ') || '—'}.`,
+    `• SHAPES PROHIBIDOS: ${forbiddenShapes.join(', ')}.`,
+    !hasUpper ? '• NO HAY ALACENAS: la pared superior debe quedar vacía.' : null,
+    !hasTall  ? '• NO HAY COLUMNAS ALTAS: no dibujar columnas/torres.' : null,
+  ].filter(Boolean).join('\n');
+
+  const inventarioGlobal = [
+    'INVENTARIO (debe coincidir EXACTAMENTE):',
+    `• Módulos totales: ${inv.total}`,
+    `• Bajo mesada: ${inv.base}`,
+    `• Alacenas: ${inv.upper}`,
+    `• Columnas/altos: ${inv.tall}`,
+    `• Lineales (zócalo/banquina): ${inv.lineales}`,
+    `• Electrodomésticos: ${inv.electro}`,
+    `• Nº total de puertas: ${inv.puertas}`,
+    `• Módulos abiertos: ${inv.abiertos}`,
+    'Si el conteo visual no coincide, el resultado es inválido.',
+  ].join('\n');
 
   const prompt = [
     lineaCocina,
-    `Dimensiones de pared aproximadas (proporción): ${widthM?.toFixed?.(2) || widthM} m de ancho × ${heightM?.toFixed?.(2) || heightM} m de alto.`,
-    `Estilo y acabados (${quality}): ${acabados.join('; ')}.`,
-    'Composición EXACTA del frente (usa este orden literal):',
-    ...plano.map(s => `- ${s}`),
-    ...(anchors.length ? ['Referencias de posición en cm desde el borde izquierdo:', ...anchors.map(a => `- ${a}`)] : []),
-    ...(pistas.length ? ['Pistas por módulo:', ...pistas] : []),
-    ...reglas,
-    'Cámara: elevación/frontal, altura de ojos, lente “normal” (~50 mm), mínima distorsión.',
-    'Iluminación: ambiente suave + LED continuo bajo alacenas; sin viñeteo fuerte.',
+    `Dimensiones pared: ${widthM.toFixed(2)} m × ${heightM.toFixed(2)} m.`,
+    `Acabados (${quality}): ${acabados.join('; ')}.`,
+    inventarioGlobal,
+    permisos,
+    'LISTA POSICIONAL (izquierda→derecha). Cada línea es un bounding box inmutable:',
+    ...posLines,
+    reglasDuras,
   ].join('\n');
 
   return prompt;
 }
+
+export default buildImagePromptFromPayload;
