@@ -7,6 +7,7 @@ import { errorHandler } from '../middlewares/errorHandler.js';
 export function createExpressApp() {
   const app = express();
   app.use(cors());
+  app.set('etag', false); // evita 304 por ETag en respuestas GET
 
   // ⬇️ NUEVO: más límite solo para /api/render (para el DataURL del canvas)
   app.use('/api/render', express.json({ limit: '25mb' }));

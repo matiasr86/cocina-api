@@ -1,8 +1,7 @@
 // api/src/services/renders.service.js
-import OpenAI from 'openai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
 const genai  = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 const GEMINI_IMAGE_MODEL = 'gemini-2.5-flash-image-preview';
@@ -42,18 +41,6 @@ function extractInlinePng(resp) {
   return Buffer.from(imgPart.inlineData.data, 'base64');
 }
 
-/* ===================== OPENAI (texto→img) ===================== */
-export async function generatePhotoRaw({ prompt, size = '1024x1024' }) {
-  const out = await openai.images.generate({
-    model: 'gpt-image-1',
-    prompt,
-    size,
-    n: 1,
-  });
-  const b64 = out.data?.[0]?.b64_json;
-  if (!b64) throw new Error('No image returned');
-  return Buffer.from(b64, 'base64');
-}
 
 /* ============ GEMINI (texto + 1 imagen → img) ============ */
 export async function generatePhotoGeminiRaw({
@@ -98,32 +85,3 @@ REGLAS ESTRICTAS DE FIDELIDAD:
   return extractInlinePng(resp);
 }
 
-/* ============ GEMINI (texto + N imágenes → img) ============ */
-export async function generatePhotoGeminiMultiRaw({
-  prompt,
-  images = [], // [{ buffer: Buffer, mime: 'image/png' }]
-}) {
-  if (!Array.isArray(images) || images.length === 0) {
-    throw new Error('Missing images array');
-  }
-
-  const model = genai.getGenerativeModel({
-    model: GEMINI_IMAGE_MODEL,
-    generationConfig: {
-      temperature: 0.15,
-      topP: 0.9,
-    },
-  });
-
-  const parts = [{ text: `${prompt}\n\nNo dibujar textos ni etiquetas en el resultado.` }];
-  for (const img of images) {
-    if (!img?.buffer) continue;
-    const mime = img?.mime || 'image/png';
-    parts.push({
-      inlineData: { data: img.buffer.toString('base64'), mimeType: mime },
-    });
-  }
-
-  const resp = await withRetry(() => model.generateContent(parts));
-  return extractInlinePng(resp);
-}

@@ -1,51 +1,25 @@
-// api/src/controllers/renders.controller.js
-import {
-  generatePhotoRaw,
-  generatePhotoGeminiRaw,
-  generatePhotoGeminiMultiRaw
-} from '../services/renders.service.js';
-import { buildImagePromptFromPayload } from '../utils/buildImagePrompt.js';
+import { generatePhotoGeminiRaw } from '../services/renders.service.js';
+import { buildPromptForPayload } from '../utils/prompts/index.js';
+import User from '../db/models/User.js';
+import Transaction from '../db/models/Transaction.js';
 
+// (ya no hace falta: import mongoose from 'mongoose')
+
+// ====== helpers ======
 function normalizeSize(q) {
   const s = (q || '').toString();
   if (s === '512'  || s === '512x512')   return '512x512';
   if (s === '768'  || s === '768x768')   return '768x768';
   if (s === '1024' || s === '1024x1024') return '1024x1024';
-  return '1024x1024'; // por defecto, más grande
+  return '1024x1024';
 }
-
-// Devuelve { buffer, mimeType } desde un DataURL (PNG/JPEG)
 function dataUrlToBuffer(dataUrl) {
   const m = /^data:(.+?);base64,([\s\S]+)$/.exec(dataUrl || '');
   if (!m) throw new Error('Bad data URL');
   return { buffer: Buffer.from(m[2], 'base64'), mimeType: m[1] };
 }
 
-// ========== OpenAI (texto → imagen) ==========
-export async function postPhotoRaw(req, res) {
-  const size = normalizeSize(req.query.size || req.body?.size);
-  let prompt = req.body?.prompt;
-
-  if (!prompt && req.body?.payload) {
-    try {
-      prompt = buildImagePromptFromPayload(req.body.payload);
-    } catch (e) {
-      return res.status(400).json({ error: 'Bad payload', detail: e?.message });
-    }
-  }
-  if (!prompt) return res.status(400).json({ error: 'Missing prompt or payload' });
-
-  const buf = await generatePhotoRaw({ prompt, size });
-  res.setHeader('Content-Type', 'image/png');
-  res.send(buf);
-}
-
-export async function postPhotoGuidedRaw(req, res) {
-  return postPhotoRaw(req, res);
-}
-
-// ========== Gemini (imagen + texto → imagen) ==========
-// Body: { payload?:object, prompt?:string, imageDataUrl: string(DataURL), size? }
+/* ---------- TU endpoint simple se queda igual ---------- */
 export async function postPhotoGeminiRaw(req, res) {
   const size = normalizeSize(req.query.size || req.body?.size);
   const imageDataUrl = req.body?.imageDataUrl;
@@ -53,16 +27,12 @@ export async function postPhotoGeminiRaw(req, res) {
 
   let prompt = req.body?.prompt;
   if (!prompt && req.body?.payload) {
-    try {
-      prompt = buildImagePromptFromPayload(req.body.payload);
-    } catch (e) {
-      return res.status(400).json({ error: 'Bad payload', detail: e?.message });
-    }
+    try { prompt = buildPromptForPayload(req.body.payload); }
+    catch (e) { return res.status(400).json({ error: 'Bad payload', detail: e?.message }); }
   }
   if (!prompt) return res.status(400).json({ error: 'Missing prompt or payload' });
 
   const { buffer, mimeType } = dataUrlToBuffer(imageDataUrl);
-
   const out = await generatePhotoGeminiRaw({
     prompt,
     inputImageBuffer: buffer,
@@ -74,112 +44,87 @@ export async function postPhotoGeminiRaw(req, res) {
   res.send(out);
 }
 
-/* ===== Helpers mini (para multi-pared) ===== */
-function _rowOf(m) {
-  if (m.row) return String(m.row);
-  const h = Number(m.height) || 0;
-  if (h >= 130) return 'tall';
-  if (h >= 45 && h <= 95) return 'base';
-  return 'upper';
-}
-function _label(m) {
-  const w = m.width != null ? `${Number(m.width)} cm` : '';
-  const extra =
-    m.subtitle ? ` — ${m.subtitle}` :
-    m.sizeLabel ? ` — ${m.sizeLabel}` :
-    '';
-  return `${m.title || m.type}${w ? ` (${w})` : ''}${extra}`;
-}
-function _lineByRow(mods = []) {
-  const byRow = { base: [], upper: [], tall: [] };
-  for (const m of mods) byRow[_rowOf(m)].push(m);
-  const order = (arr) => {
-    return [...arr].sort((a,b) => {
-      const ax = Number(a.xCm ?? a.x ?? 0);
-      const bx = Number(b.xCm ?? b.x ?? 0);
-      if (Number.isFinite(ax) && Number.isFinite(bx)) return ax - bx;
-      return String(a.title || a.type).localeCompare(String(b.title || b.type));
-    });
-  };
-  const lines = [];
-  if (byRow.base.length)  lines.push(`Bajo mesada (izq→der): ${order(byRow.base).map(_label).join(' | ')}.`);
-  if (byRow.upper.length) lines.push(`Alacenas superiores (izq→der): ${order(byRow.upper).map(_label).join(' | ')}.`);
-  if (byRow.tall.length)  lines.push(`Columnas/alto (izq→der): ${order(byRow.tall).map(_label).join(' | ')}.`);
-  return lines;
-}
+/* ---------- TRIAD: consume crédito sólo si hay 3 OK ---------- */
+export async function postRenderTriad(req, res) {
+  const uid = req.user?.uid;
+  if (!uid) return res.status(401).json({ ok:false, error:'auth_required' });
 
-/**
- * POST /api/render/photo.gemini.multi.raw
- * Body: {
- *   payload: {
- *     kitchenType: 'L'|'C',
- *     walls: [{ id, name, width, height }],
- *     modulesByWall: { [wallId]: Module[] },
- *     quality: 'started'|'premium'|'deluxe'
- *   },
- *   imageDataUrls: string[],   // DataURL de cada pared, ordenadas
- *   size?: '512x512'|'768x768'|'1024x1024'
- * }
- */
-export async function postPhotoGeminiMultiRaw(req, res) {
-  const { payload, imageDataUrls, size } = req.body || {};
-  const kt = String(payload?.kitchenType || 'Recta');
-  if (!Array.isArray(imageDataUrls) || !imageDataUrls.length) {
-    return res.status(400).json({ error: 'Missing imageDataUrls[]' });
-  }
-  if (kt !== 'L' && kt !== 'C') {
-    return res.status(400).json({ error: 'kitchenType must be "L" or "C" for multi-wall' });
+  const size = normalizeSize(req.body?.size || '1024x1024');
+  const imageDataUrl = req.body?.imageDataUrl;
+  const payload = req.body?.payload || null;
+  if (!imageDataUrl || !payload) {
+    return res.status(400).json({ ok:false, error:'missing_params' });
   }
 
-  // Prompt multi-pared textual (resumen por pared)
-  const walls = Array.isArray(payload?.walls) ? payload.walls : [];
-  const modulesByWall = payload?.modulesByWall || {};
-  const order = kt === 'L' ? ['left','right'] : ['left','front','right'];
+  const now = new Date();
+  let userDoc = await User.findOneAndUpdate(
+    { uid },
+    { $setOnInsert: { uid, credits: 0, welcomeCreditGranted: false } },
+    { new: true, upsert: true }
+  );
 
-  const header = [
-    `COCINA ${kt === 'L' ? 'EN L' : 'EN C/U'} — Referencias MULTI-PARED.`,
-    `Recibirás ${imageDataUrls.length} imagen(es) en orden: ${order.join(' → ')} (cuando existan).`,
-    'Objetivo: generar UNA imagen final de la pared principal (frontal/elevación) fiel a módulos y alineaciones.',
-    '',
-    'Esquineros / “parte negra”: cuando un esquinero muestre un lateral oscuro junto a la pared, ESO representa la profundidad del retorno de la pared adyacente. No es hueco; mantener continuidad y proporción con el módulo de la otra pared.',
-  ].join('\n');
-
-  const perWall = [];
-  for (const wallId of order) {
-    const w = walls.find(x => x.id === wallId);
-    const mods = Array.isArray(modulesByWall?.[wallId]) ? modulesByWall[wallId] : [];
-    if (!w && mods.length === 0) continue;
-    perWall.push([
-      `\n[Pared: ${w?.name || wallId}] Dimensiones aprox: ${Number(w?.width || 4)} m × ${Number(w?.height || 3)} m.`,
-      'Composición (usa el orden literal izq→der):',
-      ..._lineByRow(mods).map(s => `- ${s}`),
-    ].join('\n'));
+  if (userDoc.cooldownUntil && userDoc.cooldownUntil > now) {
+    const secs = Math.max(1, Math.ceil((userDoc.cooldownUntil - now) / 1000));
+    return res.status(429).json({ ok:false, error:'cooldown', cooldownSeconds: secs });
   }
 
-  const reglas = [
-    '',
-    'REGLAS ESTRICTAS:',
-    '• Seguir cantidades y orden por pared (izq→der) sin inventar.',
-    '• No convertir puertas↔cajones ni mover hornos/anafes.',
-    '• Alinear alacenas superiores en una línea limpia.',
-    '• Vista frontal, fondo/piso neutros, sin personas ni textos.',
-  ].join('\n');
-
-  const finalPrompt = [header, ...perWall, reglas].join('\n');
-
-  // DataURLs -> buffers
-  function dataUrlToBuffer(d) {
-    const m = /^data:(.+?);base64,([\s\S]+)$/.exec(d || '');
-    if (!m) throw new Error('Bad data URL');
-    return { buffer: Buffer.from(m[2], 'base64'), mime: m[1] || 'image/png' };
+  if ((userDoc.credits || 0) <= 0) {
+    return res.status(402).json({ ok:false, error:'no_credits' });
   }
-  const imgs = imageDataUrls.map(dataUrlToBuffer);
 
-  const buf = await generatePhotoGeminiMultiRaw({
-    prompt: finalPrompt,
-    images: imgs,
-  });
+  const locked = await User.findOneAndUpdate(
+    { _id: userDoc._id, $or: [{ inflightRender: { $ne: true } }, { inflightRender: { $exists: false } }] },
+    { $set: { inflightRender: true } },
+    { new: true }
+  );
+  if (!locked) return res.status(409).json({ ok:false, error:'render_in_progress' });
+  userDoc = locked;
 
-  res.setHeader('Content-Type', 'image/png');
-  res.send(buf);
+  let prompt;
+  try {
+    // Construye el prompt estricto en base al payload (ya mezcla userText + bridgeStrict)
+    prompt = buildPromptForPayload(payload);
+  } catch (e) {
+    await User.updateOne({ _id: userDoc._id }, { $set: { inflightRender: false } });
+    return res.status(400).json({ ok:false, error:'bad_payload', detail:e?.message });
+  }
+
+
+
+  let buf, mime;
+  try { ({ buffer: buf, mimeType: mime } = dataUrlToBuffer(imageDataUrl)); }
+  catch {
+    await User.updateOne({ _id: userDoc._id }, { $set: { inflightRender: false } });
+    return res.status(400).json({ ok:false, error:'bad_image' });
+  }
+
+  async function genOne() {
+    return generatePhotoGeminiRaw({ prompt, inputImageBuffer: buf, inputImageMime: mime, size });
+  }
+
+  let results = [];
+  try {
+    const all = await Promise.allSettled([genOne(), genOne(), genOne()]);
+    results = all.filter(r => r.status === 'fulfilled').map(r => r.value);
+  } catch {
+    results = [];
+  }
+
+  if (results.length === 3) {
+    const updated = await User.findOneAndUpdate(
+      { _id: userDoc._id },
+      { $inc: { credits: -1 }, $set: { inflightRender: false, cooldownUntil: null } },
+      { new: true }
+    );
+    await Transaction.create({ uid, type: 'render_triad', creditsDelta: -1, meta: { size, ok: true } });
+    const images = results.map(b => `data:image/png;base64,${b.toString('base64')}`);
+    return res.json({ ok:true, images, newTotal: updated?.credits ?? null });
+  }
+
+  const cooldownMs = 10 * 60 * 1000;
+  const until = new Date(Date.now() + cooldownMs);
+  await User.updateOne({ _id: userDoc._id }, { $set: { inflightRender: false, cooldownUntil: until } });
+  await Transaction.create({ uid, type: 'render_triad', creditsDelta: 0, meta: { size, ok:false, successCount: results.length } });
+
+  return res.status(503).json({ ok:false, error:'model_failed', cooldownSeconds: Math.ceil(cooldownMs/1000) });
 }
