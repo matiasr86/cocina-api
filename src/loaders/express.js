@@ -13,42 +13,27 @@ export function createExpressApp() {
     app.set('trust proxy', 1);
   }
   
-  // CORS por allowlist (desde ALLOWED_ORIGINS)
   const allowlist = (process.env.ALLOWED_ORIGINS || '')
-  .split(',')
-  .map(s => s.trim())
-  .filter(Boolean);
-
-
-  console.log('[CORS] NODE_ENV=', process.env.NODE_ENV);
-  console.log('[CORS] ALLOWED_ORIGINS=', process.env.ALLOWED_ORIGINS);
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
 
   const corsOptions = {
     origin: (origin, cb) => {
-      // Permite requests sin Origin (curl/health checks) y los que estén en allowlist
-      if (!origin || allowlist.includes(origin)) {
-        return cb(null, true);
-      }
-      // Bloquea orígenes no permitidos (sin lanzar error)
+      if (!origin || allowlist.includes(origin)) return cb(null, true);
       return cb(null, false);
     },
-    methods: ['GET','POST','PUT','DELETE','OPTIONS'],
+    methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
     allowedHeaders: ['Authorization','Content-Type'],
-    credentials: false,              // No usamos cookies para auth
+    credentials: false,           // dejalo en false si NO usás cookies/sesiones
     optionsSuccessStatus: 204,
-    maxAge: 60 * 60 * 24,            // cache del preflight (24h)
+    maxAge: 60 * 60 * 24
   };
 
-  // Sugerencia: ayuda a caches/proxies a variar por Origin
-  app.use((req, res, next) => {
-    res.header('Vary', 'Origin');
-    next();
-  });
-
-  // Aplica CORS
+  app.use((req, res, next) => { res.header('Vary', 'Origin'); next(); });
   app.use(cors(corsOptions));
-  // Preflight explícito (por si algún proxy no lo maneja solo)
   app.options(/.*/, cors(corsOptions));
+
 
 
 
