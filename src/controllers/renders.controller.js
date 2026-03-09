@@ -1,7 +1,10 @@
 import { generatePhotoGeminiRaw } from '../services/renders.service.js';
+import { reserveWelcomeMonthlySlot } from '../services/credits.service.js';
 import { buildPromptForPayload } from '../utils/prompts/index.js';
 import User from '../db/models/User.js';
 import Transaction from '../db/models/Transaction.js';
+
+
 
 // (ya no hace falta: import mongoose from 'mongoose')
 
@@ -19,50 +22,30 @@ function dataUrlToBuffer(dataUrl) {
   return { buffer: Buffer.from(m[2], 'base64'), mimeType: m[1] };
 }
 
-/* ---------- TU endpoint simple se queda igual ---------- */
-export async function postPhotoGeminiRaw(req, res) {
-  const size = normalizeSize(req.query.size || req.body?.size);
-  const imageDataUrl = req.body?.imageDataUrl;
-  if (!imageDataUrl) return res.status(400).json({ error: 'Missing imageDataUrl' });
-
-  let prompt = req.body?.prompt;
-  if (!prompt && req.body?.payload) {
-    try { prompt = buildPromptForPayload(req.body.payload); }
-    catch (e) { return res.status(400).json({ error: 'Bad payload', detail: e?.message }); }
-  }
-  if (!prompt) return res.status(400).json({ error: 'Missing prompt or payload' });
-
-  const { buffer, mimeType } = dataUrlToBuffer(imageDataUrl);
-  const out = await generatePhotoGeminiRaw({
-    prompt,
-    inputImageBuffer: buffer,
-    inputImageMime: mimeType,
-    size,
-  });
-
-  res.setHeader('Content-Type', 'image/png');
-  res.send(out);
-}
 
 /* ---------- TRIAD: consume crédito sólo si hay 3 OK ---------- */
 
 export async function postRenderTriad(req, res) {
-  const uid = req.user?.uid;
-  if (!uid) return res.status(401).json({ ok:false, error:'auth_required' });
+  const email = (req.user?.email || '').toLowerCase().trim();
+  const uid = req.user?.uid || req.user?.user_id || null;
+
+  if (!uid || !email) {
+    return res.status(401).json({ ok: false, error: 'auth_required' });
+  }
 
   const size = normalizeSize(req.body?.size || '1024x1024');
   const imageDataUrl = req.body?.imageDataUrl;
   const payload = req.body?.payload || null;
   if (!imageDataUrl || !payload) {
-    return res.status(400).json({ ok:false, error:'missing_params' });
+    return res.status(400).json({ ok: false, error: 'missing_params' });
   }
 
   const now = new Date();
-  let userDoc = await User.findOneAndUpdate(
-    { uid },
-    { $setOnInsert: { uid, credits: 0, welcomeCreditGranted: false } },
-    { new: true, upsert: true }
-  );
+  let userDoc = await User.findOne({ email });
+
+  if (!userDoc) {
+    return res.status(404).json({ ok: false, error: 'user_not_found' });
+  }
 
   if (userDoc.cooldownUntil && userDoc.cooldownUntil > now) {
     const secs = Math.max(1, Math.ceil((userDoc.cooldownUntil - now) / 1000));
@@ -101,6 +84,21 @@ export async function postRenderTriad(req, res) {
       return res.status(400).json({ ok:false, error:'bad_image' });
     }
 
+    // ✅ si el usuario NUNCA compró, este render cuenta como "gratuito"
+    const isFreeRender = !userDoc.hasPurchasedCredits;
+
+    if (isFreeRender) {
+      const slot = await reserveWelcomeMonthlySlot();
+      if (!slot) {
+        await User.updateOne({ _id: userDoc._id }, { $set: { inflightRender: false } });
+        return res.status(429).json({
+          ok: false,
+          error: 'welcome_monthly_limit',
+          message: 'Se alcanzó el límite mensual de renders gratuitos (100).',
+        });
+      }
+    }
+
     // 3) Llamadas al modelo
     async function genOne() {
       return generatePhotoGeminiRaw({ prompt, inputImageBuffer: buf, inputImageMime: mime, size });
@@ -121,7 +119,7 @@ export async function postRenderTriad(req, res) {
         { $inc: { credits: -1 }, $set: { inflightRender: false, cooldownUntil: null } },
         { new: true }
       );
-      await Transaction.create({ uid, type: 'render_triad', creditsDelta: -1, meta: { size, ok: true } });
+      await Transaction.create({ email, uid, type: 'render_triad', creditsDelta: -1, meta: { size, ok: true, freeRender: !userDoc.hasPurchasedCredits} });
       const images = results.map(b => `data:image/png;base64,${b.toString('base64')}`);
       return res.json({ ok:true, images, newTotal: updated?.credits ?? null });
     }
@@ -130,7 +128,7 @@ export async function postRenderTriad(req, res) {
     const cooldownMs = Number(process.env.COOLDOWN_SECONDS || 600) * 1000; // default 10 min
     const until = new Date(Date.now() + cooldownMs);
     await User.updateOne({ _id: userDoc._id }, { $set: { inflightRender: false, cooldownUntil: until } });
-    await Transaction.create({ uid, type: 'render_triad', creditsDelta: 0, meta: { size, ok:false, successCount: results.length } });
+    await Transaction.create({ email, uid, type: 'render_triad', creditsDelta: 0, meta: { size, ok:false, successCount: results.length, freeRender: isFreeRender } });
     return res.status(503).json({ ok:false, error:'model_failed', cooldownSeconds: Math.ceil(cooldownMs/1000) });
 
   } catch (e) {
@@ -140,7 +138,7 @@ export async function postRenderTriad(req, res) {
     const until = new Date(Date.now() + cooldownMs);
     try {
       await User.updateOne({ _id: userDoc._id }, { $set: { inflightRender: false, cooldownUntil: until } });
-      await Transaction.create({ uid, type: 'render_triad', creditsDelta: 0, meta: { size, ok:false, crashed:true } });
+      await Transaction.create({ email, uid, type: 'render_triad', creditsDelta: 0, meta: { size, ok:false, crashed:true }, freeRender: isFreeRender });
     } catch {}
     return res.status(503).json({ ok:false, error:'model_failed', cooldownSeconds: Math.ceil(cooldownMs/1000) });
   }
@@ -148,34 +146,3 @@ export async function postRenderTriad(req, res) {
 
 
 
-/*
-// controllers/render.js  (stub de prueba)
-export async function postRenderTriad(req, res) {
-  try {
-    const uid = req.user?.uid;
-    if (!uid) return res.status(401).json({ ok:false, error:'auth_required' });
-
-    const cooldownMs = 10 * 60 * 1000; // 10 minutos
-    const until = new Date(Date.now() + cooldownMs);
-
-    // asegurá que el usuario exista y guardá el cooldown
-    const userDoc = await User.findOneAndUpdate(
-      { uid },
-      { $setOnInsert: { uid, credits: 0, welcomeCreditGranted: false } },
-      { new: true, upsert: true }
-    );
-    await User.updateOne(
-      { _id: userDoc._id },
-      { $set: { inflightRender: false, cooldownUntil: until } }
-    );
-
-    // responde 503 con el shape esperado por el front
-    return res
-      .status(503)
-      .json({ ok:false, error:'model_failed', cooldownSeconds: Math.ceil(cooldownMs/1000) });
-  } catch (e) {
-    console.error('Stub postRenderTriad failed:', e);
-    return res.status(500).json({ ok:false, error:'internal' });
-  }
-}
-*/

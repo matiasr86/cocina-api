@@ -1,7 +1,7 @@
 // api/src/controllers/credits.controller.js
-import {
-  ensureUserAndWelcome, redeemCodeForUser,
-} from '../services/credits.service.js';
+import {ensureUserAndWelcome, redeemCodeForUser, getMonthKey} from '../services/credits.service.js';
+import WelcomeMonthlyQuota from '../db/models/WelcomeMonthlyQuota.js';
+
 
 function setNoCache(res) {
   res.set({
@@ -27,12 +27,21 @@ export async function getMyCredits(req, res) {
       null;
 
     const user = await ensureUserAndWelcome({ uid, email, signInProvider });
+    const monthKey = getMonthKey();
+    const limit = 100;
+
+    const quotaDoc = await WelcomeMonthlyQuota.findOne({ monthKey }).lean();
+    const used = Number(quotaDoc?.count || 0);
+    const remaining = Math.max(0, limit - used);
+    const reached = used >= limit;
 
     setNoCache(res);
     return res.json({
       total: Number(user?.credits || 0),
       cooldownUntil: user?.cooldownUntil || null,
       inflight: !!user?.inflightRender,
+      hasPurchasedCredits: !!user?.hasPurchasedCredits,
+      welcomeMonthlyQuota: { limit, used, remaining, reached },
     });
   } catch (err) {
     console.error('[getMyCredits] error:', err);

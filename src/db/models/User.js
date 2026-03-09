@@ -12,6 +12,8 @@ const UserSchema = new mongoose.Schema(
     // Créditos y flags
     credits: { type: Number, default: 0 },
     welcomeCreditGranted: { type: Boolean, default: false },
+    // ✅ NUEVO: marca si alguna vez canjeó/compró créditos
+    hasPurchasedCredits: { type: Boolean, default: false },
 
     // Locks/cooldown para render
     inflightRender:     { type: Boolean, default: false },

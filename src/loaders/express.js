@@ -18,14 +18,25 @@ export function createExpressApp() {
     .map(s => s.trim())
     .filter(Boolean);
 
+  const allowSuffixes = (process.env.ALLOWED_ORIGIN_SUFFIXES || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+
   const corsOptions = {
     origin: (origin, cb) => {
-      if (!origin || allowlist.includes(origin)) return cb(null, true);
-      return cb(null, false);
+      // requests sin Origin (postman, server-to-server, etc.)
+      if (!origin) return cb(null, true);
+
+      const okByList = allowlist.includes(origin);
+      const okBySuffix = allowSuffixes.some(suf => origin.endsWith(suf));
+
+      if (okByList || okBySuffix) return cb(null, true);
+      return cb(null, false); // sin headers CORS => el browser lo bloquea
     },
     methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
     allowedHeaders: ['Authorization','Content-Type'],
-    credentials: false,           // dejalo en false si NO usás cookies/sesiones
+    credentials: false,
     optionsSuccessStatus: 204,
     maxAge: 60 * 60 * 24
   };

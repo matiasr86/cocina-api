@@ -3,6 +3,7 @@ import fetch from 'node-fetch';
 import User from '../db/models/User.js';
 import Transaction from '../db/models/Transaction.js';
 import RedeemedCode from '../db/models/RedeemedCode.js';
+import WelcomeMonthlyQuota from '../db/models/WelcomeMonthlyQuota.js';
 
 /* ==============================
    Odoo JSON-RPC helpers (password o API Key como password)
@@ -149,6 +150,7 @@ export async function ensureUserAndWelcome({ uid, email, signInProvider }) {
         $setOnInsert: {
           credits: 0,
           welcomeCreditGranted: false,
+          hasPurchasedCredits: false,
           inflightRender: false,
           inflightLockUntil: null,
           cooldownUntil: null,
@@ -163,11 +165,13 @@ export async function ensureUserAndWelcome({ uid, email, signInProvider }) {
     else throw err;
   }
 
+  const WELCOME_CREDITS = 2;
+
   const isGoogle = String(signInProvider || '').toLowerCase() === 'google.com';
   if (isGoogle && !user.welcomeCreditGranted) {
     const updated = await User.findOneAndUpdate(
       { _id: user._id, welcomeCreditGranted: false },
-      { $inc: { credits: 1 }, $set: { welcomeCreditGranted: true, updatedAt: new Date() } },
+      { $inc: { credits: WELCOME_CREDITS }, $set: { welcomeCreditGranted: true, updatedAt: new Date() } },
       { new: true }
     );
     if (updated) {
@@ -177,29 +181,16 @@ export async function ensureUserAndWelcome({ uid, email, signInProvider }) {
           email: emailKey,
           uid,
           type: 'adjust',
-          creditsDelta: +1,
-          meta: { reason: 'welcome_google' },
+          creditsDelta: +WELCOME_CREDITS,
+          meta: { reason: 'welcome_google', welcomeCredits: WELCOME_CREDITS },
           createdAt: new Date(),
         });
       } catch {}
     }
   }
-
   return user;
 }
 
-export async function getCreditsStateByEmail(email) {
-  const emailKey = (email || '').toLowerCase().trim();
-  const user = await User.findOne({ email: emailKey });
-  if (!user) return { total: 0, cooldownSecondsRemaining: 0 };
-
-  const now = new Date();
-  const cooldown = user.cooldownUntil && user.cooldownUntil > now
-    ? Math.max(1, Math.ceil((user.cooldownUntil - now) / 1000))
-    : 0;
-
-  return { total: user.credits, cooldownSecondsRemaining: cooldown };
-}
 
 export async function debitOneCreditForRender(email, meta = {}) {
   const emailKey = (email || '').toLowerCase().trim();
@@ -229,13 +220,12 @@ export async function debitOneCreditForRender(email, meta = {}) {
 
 /** Resuelve créditos a partir del nombre del programa*/
 function resolveCreditsFromProgram({programName}) {
-  const name = String(programName);
-
-  if (name === "Pack 3 Créditos") return 3;
+  const name = String(programName || '');
+  if (name === "Gift Cards") return 3;
   if (name === "Pack 10 Créditos") return 10;
   if (name === "Pack 20 Créditos") return 20;
-  else
-    return 0;
+  if (name === "Pack 50 Créditos") return 50;
+  return 0;
 }
 
 /** Lee gift en Odoo (modelo loyalty.card) por `code` */
@@ -250,6 +240,7 @@ async function fetchGiftFromOdooByCode(codeRaw) {
     ['id','code','program_id','program_type','points','use_count','expiration_date','company_id','create_date'],
     { limit: 1, order: 'id desc' }
   );
+  console.log('Respuesta completa de Odoo:', rows);
 
   // reintento en minúsculas
   if (!rows?.length) {
@@ -261,10 +252,14 @@ async function fetchGiftFromOdooByCode(codeRaw) {
     );
   }
 
+
   if (!rows?.length) return null;
 
   const r = rows[0];
   const programName = Array.isArray(r.program_id) ? r.program_id[1] : null;
+  console.log(programName);
+  
+
   return {
     id: r.id,
     code: r.code,
@@ -328,7 +323,10 @@ export async function redeemCodeForUser({ email, uid, code }) {
   // 4) sumar créditos al usuario
   const user = await User.findOneAndUpdate(
     { email: emailKey },
-    { $inc: { credits: creditsToAdd }, $set: { updatedAt: new Date() } },
+    {
+      $inc: { credits: creditsToAdd },
+      $set: { updatedAt: new Date(), hasPurchasedCredits: true },
+    },
     { new: true, upsert: true }
   );
 
@@ -344,6 +342,7 @@ export async function redeemCodeForUser({ email, uid, code }) {
         odooCardId: gift.id,
         programName: gift.programName,
         points: gift.points,
+        marksPurchasedCredits: true,
       },
       createdAt: new Date(),
     });
@@ -395,9 +394,43 @@ export async function redeemCodeForUser({ email, uid, code }) {
 }
 
 
+export function getMonthKey(d = new Date()) {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  return `${y}-${m}`;
+}
+
+export async function reserveWelcomeMonthlySlot() {
+  const monthKey = getMonthKey();
+
+  // 1) asegurar doc del mes (si no existe, lo crea con count=0)
+  try {
+    await WelcomeMonthlyQuota.updateOne(
+      { monthKey },
+      { $setOnInsert: { monthKey, count: 0 } },
+      { upsert: true }
+    );
+  } catch (err) {
+    // carrera: otro request lo creó al mismo tiempo
+    if (err?.code !== 11000) throw err;
+  }
+
+  // 2) reservar 1 slot solo si todavía hay cupo
+  const doc = await WelcomeMonthlyQuota.findOneAndUpdate(
+    { monthKey, count: { $lt: 100 } },
+    { $inc: { count: 1 } },
+    { new: true }
+  );
+
+  // doc === null => ya llegó a 100
+  return doc;
+}
+
+
 export default {
+  getMonthKey,
+  reserveWelcomeMonthlySlot,
   ensureUserAndWelcome,
-  getCreditsStateByEmail,
   redeemCodeForUser,
   debitOneCreditForRender,
 };

@@ -1,12 +1,12 @@
 // api/src/services/renders.service.js
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-const genai  = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+// ✅ Modelo estable (evitá el deprecated preview)
+const GEMINI_IMAGE_MODEL = 'gemini-3.1-flash-image-preview';
 
-const GEMINI_IMAGE_MODEL = 'gemini-2.5-flash-image-preview';
-
-/* ============== retry/backoff para 5xx ============== */
+/* ============== retry/backoff para 5xx/429 ============== */
 async function withRetry(fn, times = 3) {
   let lastErr;
   for (let i = 0; i < times; i++) {
@@ -14,10 +14,10 @@ async function withRetry(fn, times = 3) {
       return await fn();
     } catch (e) {
       lastErr = e;
-      const status = e?.response?.status || e?.status || e?.code;
-      const is5xx = typeof status === 'number' ? status >= 500 : false;
-      if (is5xx && i < times - 1) {
-        const delay = 400 * (i + 1);
+      const status = e?.status || e?.response?.status;
+      const isRetryable = status === 429 || (typeof status === 'number' && status >= 500);
+      if (isRetryable && i < times - 1) {
+        const delay = 500 * (i + 1);
         await new Promise(r => setTimeout(r, delay));
         continue;
       }
@@ -29,20 +29,23 @@ async function withRetry(fn, times = 3) {
 
 /* ============== extraer inline PNG ============== */
 function extractInlinePng(resp) {
+  // En GenAI nuevo, la respuesta suele estar en resp.candidates[0].content.parts
   const parts =
-    resp?.response?.candidates?.[0]?.content?.parts ||
     resp?.candidates?.[0]?.content?.parts ||
+    resp?.response?.candidates?.[0]?.content?.parts ||
     [];
+
   const imgPart = parts.find(p => p?.inlineData?.data);
   if (!imgPart) {
-    const fr = resp?.response?.candidates?.[0]?.finishReason || 'unknown';
+    const fr =
+      resp?.candidates?.[0]?.finishReason ||
+      resp?.response?.candidates?.[0]?.finishReason ||
+      'unknown';
     throw new Error(`Gemini did not return an image (finishReason: ${fr})`);
   }
   return Buffer.from(imgPart.inlineData.data, 'base64');
 }
 
-
-/* ============ GEMINI (texto + 1 imagen → img) ============ */
 export async function generatePhotoGeminiRaw({
   prompt,
   inputImageBuffer,
@@ -50,14 +53,6 @@ export async function generatePhotoGeminiRaw({
   size = '1024x1024',
 }) {
   if (!inputImageBuffer) throw new Error('Missing input image buffer');
-
-  const model = genai.getGenerativeModel({
-    model: GEMINI_IMAGE_MODEL,
-    generationConfig: {
-      temperature: 0.15,   // ↓ menos invención
-      topP: 0.9,
-    },
-  });
 
   const sizeHint =
     size === '512x512'  ? 'Imagen cuadrada 512×512.'  :
@@ -75,13 +70,23 @@ REGLAS ESTRICTAS DE FIDELIDAD:
   const guidedPrompt = [sizeHint, strictRules, (prompt || '')].join('\n\n');
 
   const base64 = inputImageBuffer.toString('base64');
+
   const resp = await withRetry(() =>
-    model.generateContent([
-      { text: guidedPrompt },
-      { inlineData: { data: base64, mimeType: inputImageMime } },
-    ])
+    ai.models.generateContent({
+      model: GEMINI_IMAGE_MODEL,
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { text: guidedPrompt },
+            { inlineData: { data: base64, mimeType: inputImageMime } },
+          ],
+        },
+      ],
+      // Si querés mantener el estilo de tu config:
+      generationConfig: { temperature: 0.15, topP: 0.9 },
+    })
   );
 
   return extractInlinePng(resp);
 }
-
